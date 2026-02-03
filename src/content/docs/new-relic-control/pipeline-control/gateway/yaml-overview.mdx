@@ -6,8 +6,59 @@ freshnessValidatedDate: never
 
 This reference covers YAML syntax for advanced users creating custom gateway configurations. For conceptual information, see [Gateway overview](/docs/new-relic-control/pipeline-control/gateway/overview). For a guided experience, use the [Gateway UI](/docs/new-relic-control/pipeline-control/gateway/ui-guide). While the Gateway UI is recommended for most users, YAML configuration offers full control over the telemetry pipeline structure.
 
+## Complete YAML structure
+
+Gateway configurations use a declarative YAML format:
+
+```yaml
+version: "2.0.0"
+autoscaling:
+  minReplicas: 2
+  maxReplicas: 10
+  targetCPUUtilizationPercentage: 60
+configuration:
+  simplified/v1:
+    steps:
+      receivelogs:
+        description: "Receive logs from agents"
+        output: ["transform/Logs"]
+
+      transform/Logs:
+        description: "Add environment metadata"
+        config:
+          log_statements:
+            - set(attributes["environment"], "production")
+        output: ["filter/Logs"]
+
+      filter/Logs:
+        description: "Drop debug logs"
+        config:
+          logs:
+            - 'severity.text == "DEBUG"'
+        output: ["probabilistic_sampler/Logs"]
+
+      probabilistic_sampler/Logs:
+        description: "Sample 10% of logs"
+        config:
+          globalSamplingPercentage: 10
+        output: ["exportlogs"]
+
+      exportlogs:
+        description: "Export to New Relic"
+        output: []
+troubleshooting:
+  proxy: false
+  requestTraceLogs: false
+```
+
+**Top-level structure**:
+- `version`: Configuration format version (currently `"2.0.0"`)
+- `autoscaling`: Gateway replica scaling configuration
+- `configuration.simplified/v1`: Simplified abstraction layer for defining telemetry pipelines
+- `troubleshooting`: Debug settings
+
 ## Configuration hierarchy
-The Gateway configuration follows a directed acyclic graph (DAG) structure where each step defines its behavior and points to the next step in the pipeline using the output field.
+The Gateway configuration follows a directed acyclic graph (DAG) structure where each step defines its behavior and points to the next step in the pipeline using the `output` field. This creates an explicit data flow: data enters through receivers, flows through processors (transform, filter, sample), and exits through exporters.
 
 ### Step naming conventions
 
@@ -20,32 +71,113 @@ The Gateway configuration follows a directed acyclic graph (DAG) structure where
 
 ### Processor configurations
 
+Gateway supports three primary processor types for transforming, filtering, and sampling telemetry data.
+
 #### Transform processor
 
 Used for modifying, enriching, or parsing telemetry using OTTL (OpenTelemetry Transformation Language).
 
-Config fields:
-- log_statements: Array for log transformations (context: log)
-- statements: Array for metrics/traces transformations (context: span)
+**Step naming**: `transform/Logs`, `transform/Metrics`, `transform/Traces`
+
+**Config fields**:
+- `log_statements`: Array of OTTL statements for log transformations (context: log)
+- `metric_statements`: Array of OTTL statements for metric transformations (context: metric)
+- `trace_statements`: Array of OTTL statements for trace transformations (context: trace)
+- `conditions`: Array of boolean OTTL conditions that determine whether or not statements are evaluated
+
+**Common use cases**:
+- Enrich telemetry with organizational metadata (environment, region, team)
+- Parse unstructured log messages into structured attributes
+- Normalize attribute names and value schemas across different services or agents
+- Hash or redact sensitive data (PII, credentials)
+- Extract values from strings using regex, grok, or JSON parsing
+- Aggregate or scale metrics
+
+**Example**:
+```yaml
+transform/Logs:
+  description: "Enrich logs with metadata"
+  config:
+    log_statements:
+      - set(attributes["environment"], "production")
+      - set(attributes["region"], "us-east-1")
+  output: ["filter/Logs"]
+```
+
+See [Transform processor](/docs/new-relic-control/pipeline-control/gateway/transform-processor) for detailed examples and OTTL function reference.
 
 #### Filter processor
-Used to drop telemetry records based on boolean expressions.
 
-Config fields:
-- logs: Array of OTTL boolean expressions for log filtering
-- spans: Array of OTTL boolean expressions for metric/trace filtering
+Used to drop telemetry records or attributes based on OTTL boolean expressions.
+
+**Step naming**: `filter/Logs`, `filter/Metrics`, `filter/Traces`
+
+**Config fields**:
+- `logs`: Array of OTTL boolean expressions for log filtering
+- `spans`: Array of OTTL boolean expressions for trace span filtering
+- `metrics`: Array of OTTL boolean expressions for metric filtering
+
+**Behavior**: When a condition evaluates to `true`, the telemetry record is dropped.
+
+**Common use cases**:
+- Drop PII or test environment data
+- Remove debug-level logs from production
+- Filter out health check requests
+- Drop metrics with specific prefixes or patterns
+- Remove low-value telemetry based on attributes
+
+**Example**:
+```yaml
+filter/Logs:
+  description: "Drop debug logs and test data"
+  config:
+    logs:
+      - 'severity.text == "DEBUG"'
+      - 'attributes["environment"] == "test"'
+  output: ["probabilistic_sampler/Logs"]
+```
+
+See [Filter processor](/docs/new-relic-control/pipeline-control/gateway/filter-processor) for detailed examples and condition syntax.
 
 #### Sampling processor
-Used to implement probabilistic sampling logic.
 
-Config fields:
-- global_sampling_percentage: Default sampling rate (0-100)
-- conditionalSamplingRules: Array of conditional rules
-  - name: Rule identifier
-  - description: Human-readable description
-  - sampling_percentage: Sampling rate for matched data (0-100)
-  - source_of_randomness: Field to use for randomness (typically trace.id)
-  - condition: Attribute matching expression
+Used to implement probabilistic sampling to reduce data volume while preserving signal.
+
+**Step naming**: `probabilistic_sampler/Logs`, `probabilistic_sampler/Metrics`, `probabilistic_sampler/Traces`
+
+**Config fields**:
+- `globalSamplingPercentage`: Default sampling rate (0-100) applied to all data that doesn't match other sampling rule conditions in this processor instance
+- `conditionalSamplingRules`: Array of conditional rules that override the global rate
+  - `name`: Rule identifier
+  - `description`: Human-readable description
+  - `samplingPercentage`: Sampling rate for matched data (0-100)
+  - `sourceOfRandomness`: Field to use for sampling decision (typically `trace_id`)
+  - `condition`: OTTL expression to match telemetry
+
+**Behavior**: Conditional rules are evaluated in order. The first matching rule determines the sampling rate. If no rules match, the global sampling percentage applies.
+
+**Common use cases**:
+- Keep 100% of errors while sampling success cases
+- Sample high-volume services more aggressively
+- Preserve slow requests/traces while sampling fast ones
+- Different sampling rates per environment or service tier
+
+**Example**:
+```yaml
+probabilistic_sampler/Logs:
+  description: "Intelligent sampling: keep errors, sample success"
+  config:
+    globalSamplingPercentage: 10
+    conditionalSamplingRules:
+      - name: "preserve-errors"
+        description: "Keep all error logs"
+        samplingPercentage: 100
+        sourceOfRandomness: "trace_id"
+        condition: 'severity.text == "ERROR" or severity.text == "FATAL"'
+  output: ["exportlogs"]
+```
+
+See [Sampling processor](/docs/new-relic-control/pipeline-control/gateway/sampling-processor) for detailed examples and sampling strategies.
 
 ## Field reference
 
@@ -69,13 +201,45 @@ Config fields:
 | config      | object | Conditional | Required for processors, omit for receivers/exporters |
 | output      | array  | Yes         | Next step names (empty [] for exporters)              |
 
+## Pipeline flow and output chaining
+
+Each step declares its downstream targets using the `output` field, creating an explicit data flow through your pipeline.
+
+**Output field behavior**:
+- Array of step names that receive data from this step
+- Empty array `[]` for terminal steps (exporters)
+- Multiple outputs create parallel processing paths of the same telemetry data
+
+**Example flow**:
+```yaml
+receivelogs:
+  output: ["transform/Logs"]
+
+transform/Logs:
+  config: {...}
+  output: ["filter/Logs"]
+
+filter/Logs:
+  config: {...}
+  output: ["probabilistic_sampler/Logs"]
+
+probabilistic_sampler/Logs:
+  config: {...}
+  output: ["exportlogs"]
+
+exportlogs:
+  output: []  # Terminal step
+```
+
+**Processing order**: Data flows from receivers → processors (in the order you define) → exporters. Each processor can pass data to one or multiple downstream processors, allowing you to create branching pipelines if needed.
+
 ## Field naming conventions
 
-- Step-level: camelCase (conditionalSamplingRules, log_statements).
-- Config-level: snake_case (global_sampling_percentage, sampling_percentage, source_of_randomness).
-- Use exact casing from examples (YAML is case-sensitive).
+- **Step-level fields**: Use camelCase (e.g., `conditionalSamplingRules`)
+- **Config-level fields**: May use snake_case (e.g., `log_statements`, `sampling_percentage`)
+- **YAML is case-sensitive**: Use exact casing from these examples
 
-Each step's output array specifies the next step(s).
+Each step's output array specifies the next step(s) in the pipeline.
 
 ## Validation and deployment
 

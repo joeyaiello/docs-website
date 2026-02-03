@@ -124,7 +124,11 @@ Each type flows through its own pipeline with its own processors.
 
 Processors are the building blocks of your pipeline. Each processor type serves a specific purpose:
 
-**Transform processors** modify data using OTTL (OpenTelemetry Transformation Language):
+<Callout variant="tip">
+Gateway processors use **OTTL (OpenTelemetry Transformation Language)** for writing transformation statements and boolean conditions. OTTL is a powerful, vendor-neutral language with a rich set of functions. Learn more in the [OpenTelemetry OTTL documentation](https://github.com/open-telemetry/opentelemetry-collector-contrib/blob/main/pkg/ottl/README.md).
+</Callout>
+
+**Transform processors** modify data using OTTL:
 - Add, update, or delete attributes
 - Parse strings with regex patterns
 - Derive new fields from existing data
@@ -292,9 +296,8 @@ Choose your path:
 
 - **Visual configuration**: [Use the Gateway UI](/docs/new-relic-control/pipeline-control/gateway/ui-guide)
 - **YAML configuration**: [Learn YAML structure](/docs/new-relic-control/pipeline-control/gateway/yaml-overview)
-- **See examples**: [Complete configuration examples](/docs/new-relic-control/pipeline-control/gateway/examples)
 
 Or dive into specific processor types:
-- [Transform processor](/docs/new-relic-control/pipeline-control/gateway/transform-processor)
-- [Filter processor](/docs/new-relic-control/pipeline-control/gateway/filter-processor)
-- [Sampling processor](/docs/new-relic-control/pipeline-control/gateway/sampling-processor)
+- [Transform processor](/docs/new-relic-control/pipeline-control/gateway/transform-processor) - Modify, enrich, and parse data using OTTL
+- [Filter processor](/docs/new-relic-control/pipeline-control/gateway/filter-processor) - Drop unwanted data using OTTL conditions
+- [Sampling processor](/docs/new-relic-control/pipeline-control/gateway/sampling-processor) - Reduce data volume with conditional, rate-based sampling
